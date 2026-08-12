@@ -118,6 +118,30 @@ LanguageServer <- R6::R6Class("LanguageServer",
                 self$workspace_cache$clear()
             }
         },
+        add_workspace_tree = function(uri) {
+            # Register `uri` and, if `nested_packages_depth` is positive, every
+            # R package nested below it, as separate workspaces.
+            # Returns the uris that were newly registered.
+            added <- character(0)
+            key <- if (length(uri) == 0) DEFAULT_WORKSPACE else uri
+            if (!self$workspaces$has(key)) {
+                self$add_workspace(uri)
+                added <- key
+            }
+            if (length(uri) == 0) {
+                return(added)
+            }
+            depth <- lsp_settings$get("nested_packages_depth")
+            for (path in find_nested_packages(path_from_uri(uri), depth)) {
+                nested_uri <- path_to_uri(path)
+                if (!self$workspaces$has(nested_uri)) {
+                    logger$info("nested package workspace: ", path)
+                    self$add_workspace(nested_uri)
+                    added <- c(added, nested_uri)
+                }
+            }
+            added
+        },
         remove_workspace = function(uri) {
             key <- if (length(uri) == 0) DEFAULT_WORKSPACE else uri
             if (key == DEFAULT_WORKSPACE) {
@@ -290,6 +314,11 @@ LanguageServer <- R6::R6Class("LanguageServer",
                     }
                     workspace$import_from_namespace_file()
                 }
+                return(invisible(NULL))
+            }
+            depth <- lsp_settings$get("nested_packages_depth")
+            if (length(depth) && !is.na(depth) && depth < 0) {
+                # a negative depth opts out of indexing packages altogether
                 return(invisible(NULL))
             }
             logger$info("load workspace:", workspace$root)

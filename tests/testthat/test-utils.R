@@ -249,3 +249,41 @@ test_that("XML lookup returns a missing node outside parsed source", {
     scopes <- xdoc_find_enclosing_scopes(xdoc, line = 20L, col = 1L)
     expect_length(scopes, 0L)
 })
+
+test_that("find_nested_packages scans a workspace for nested packages", {
+    make_package <- function(...) {
+        path <- file.path(...)
+        dir.create(file.path(path, "R"), recursive = TRUE)
+        writeLines(
+            c(paste0("Package: ", basename(path)), "Version: 0.0.1"),
+            file.path(path, "DESCRIPTION")
+        )
+        normalizePath(path)
+    }
+
+    root <- normalizePath(withr::local_tempdir())
+    pkg_a <- make_package(root, "pkga")
+    pkg_b <- make_package(root, "nested", "pkgb")
+    dir.create(file.path(root, "not-a-package"))
+    # hidden and vendored directories are never scanned
+    make_package(root, ".hidden", "pkgc")
+    make_package(root, "renv", "pkgd")
+
+    # depth 0 (the default) keeps the previous behaviour: no scanning at all
+    expect_equal(find_nested_packages(root, 0), character(0))
+    expect_equal(find_nested_packages(root, -1), character(0))
+
+    expect_equal(find_nested_packages(root, 1), pkg_a)
+    expect_setequal(find_nested_packages(root, 2), c(pkg_a, pkg_b))
+    expect_setequal(find_nested_packages(root, Inf), c(pkg_a, pkg_b))
+
+    # a package's own sub-directories are not scanned again
+    make_package(pkg_a, "inst", "pkge")
+    expect_setequal(find_nested_packages(root, Inf), c(pkg_a, pkg_b))
+
+    # invalid roots and depths are tolerated
+    expect_equal(find_nested_packages(file.path(root, "gone"), 1), character(0))
+    expect_equal(find_nested_packages(character(0), 1), character(0))
+    expect_equal(find_nested_packages(root, NA), character(0))
+    expect_equal(find_nested_packages(root, NULL), character(0))
+})

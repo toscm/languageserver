@@ -34,10 +34,10 @@ on_initialize <- function(self, id, params) {
     if (is.list(params$workspaceFolders) && length(params$workspaceFolders) > 0) {
         logger$info("workspaceFolders provided: ", length(params$workspaceFolders))
         for (folder in params$workspaceFolders) {
-            self$add_workspace(uri_escape_unicode(folder$uri))
+            self$add_workspace_tree(uri_escape_unicode(folder$uri))
         }
     } else {
-        self$add_workspace(self$rootUri)
+        self$add_workspace_tree(self$rootUri)
     }
     logger$info("workspaces initialized: ", self$workspaces$size())
 

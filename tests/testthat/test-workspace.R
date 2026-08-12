@@ -221,3 +221,46 @@ test_that("Fallback workspace cleans up documents when directory is added", {
   expect_equal(length(result), 1)
 })
 
+test_that("Nested packages are loaded when nested_packages_depth is positive", {
+  skip_on_cran()
+
+  make_package <- function(root, name, fn) {
+    path <- file.path(root, name)
+    dir.create(file.path(path, "R"), recursive = TRUE)
+    writeLines(
+      c(paste0("Package: ", name), "Version: 0.0.1"),
+      file.path(path, "DESCRIPTION")
+    )
+    writeLines(sprintf("%s <- function(x) { x }", fn), file.path(path, "R", "code.R"))
+    path
+  }
+
+  root <- tempfile()
+  dir.create(root)
+  make_package(root, "pkga", "fun_nested1")
+  make_package(file.path(root, "sub"), "pkgb", "fun_nested2")
+  # the workspace root itself is not a package
+  writeLines("# notes", file.path(root, "README.md"))
+
+  client <- language_client(root)
+
+  # the default depth of 0 keeps the previous behaviour: nothing is indexed
+  result <- client %>% respond_workspace_symbol("fun_nested", retry = FALSE)
+  expect_length(result, 0)
+
+  # the setting may arrive after initialization, as it does from vscode-R
+  client %>% notify(
+    "workspace/didChangeConfiguration",
+    list(settings = list(diagnostics = FALSE, nested_packages_depth = 2))
+  )
+
+  result <- client %>% respond_workspace_symbol("fun_nested",
+    retry_when = function(result) {
+      length(result) < 2
+    })
+  expect_length(result, 2)
+  expect_setequal(
+    vapply(result, function(symbol) symbol$name, character(1)),
+    c("fun_nested1", "fun_nested2")
+  )
+})

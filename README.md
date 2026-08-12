@@ -200,6 +200,7 @@ settings | default | description
 `r.lsp.index_persistent_cache` | `true` | persist validated shallow summaries in the user cache directory
 `r.lsp.server_capabilities` | `{}` | override server capabilities defined in [capabilities.R](https://github.com/REditorSupport/languageserver/blob/master/R/capabilities.R). See FAQ below.
 `r.lsp.link_file_size_limit` | 16384 | maximum file size (in bytes) that supports document links
+`r.lsp.nested_packages_depth` | `0` | directory depth to scan below each workspace folder for nested R packages. See FAQ below.
 
 These settings could also specified in `.Rprofile` file via `options(languageserver.<SETTING_NAME> =  <VALUE>)`. For example,
 
@@ -218,6 +219,48 @@ Static paths built from string literals, `file.path()`, and `here::here()` are
 recognized; project code is never executed to resolve a path.
 
 ## FAQ
+
+### Nested R packages
+
+By default, a workspace folder is indexed only if the folder itself is an R
+package, i.e. if it contains a `DESCRIPTION` file. Any other folder is not
+scanned at all, and only the files opened in the editor are known to the server.
+This means that a workspace holding several packages in sub-directories, or a
+package that does not sit at the top level of the project, provides no workspace
+symbols and no cross-file definitions until each file is opened.
+
+Setting `nested_packages_depth` to a positive number makes the server scan each
+workspace folder for R packages in sub-directories, and register every package it
+finds as a workspace of its own. The value is the maximal directory depth to
+descend into:
+
+```r
+options(languageserver.nested_packages_depth = 1)
+```
+
+With the layout below, a depth of `1` picks up `pkga`, while a depth of `2` is
+needed to also pick up `pkgb`:
+
+```
+workspace/
+├── README.md
+├── pkga/            <- depth 1
+│   └── DESCRIPTION
+└── nested/
+    └── pkgb/        <- depth 2
+        └── DESCRIPTION
+```
+
+Each package is indexed independently, so completions and diagnostics in one
+package are not polluted by the symbols of another. Hidden directories and
+`renv`, `packrat`, `node_modules`, `revdep`, and `vendor` are never scanned, and
+the scan does not descend into a directory that is already a package. Keep the
+depth as small as your layout allows, since a large depth on a deep tree makes
+startup slower.
+
+The default of `0` preserves the behaviour described in the first paragraph. A
+negative value additionally stops the server from indexing a package workspace
+at all.
 
 ### Linters
 

@@ -26,10 +26,10 @@ refresh_index_summary <- function(workspace, index, uri) {
 workspace_did_change_workspace_folders <- function(self, params) {
     event <- params$event
     for (folder in event$added) {
-        uri <- uri_escape_unicode(folder$uri)
-        self$add_workspace(uri)
-        workspace <- self$get_workspace(uri)
-        self$load_workspace(workspace)
+        for (uri in self$add_workspace_tree(uri_escape_unicode(folder$uri))) {
+            workspace <- self$get_workspace(uri)
+            self$load_workspace(workspace)
+        }
     }
     for (folder in event$removed) {
         self$remove_workspace(uri_escape_unicode(folder$uri))
@@ -55,6 +55,19 @@ workspace_did_change_configuration <- function(self, params) {
         "index_time_budget_ms", "index_persistent_cache"
     ))
     lsp_settings$update_from_workspace(settings)
+
+    # `nested_packages_depth` may only arrive with the client configuration,
+    # that is, after the workspaces have been created in `on_initialize`.
+    # iterate over the registered keys rather than rebuilding a uri from
+    # `workspace$root`, so that an existing workspace is never registered twice
+    for (key in self$workspaces$keys()) {
+        if (identical(key, DEFAULT_WORKSPACE)) {
+            next
+        }
+        for (uri in self$add_workspace_tree(key)) {
+            self$load_workspace(self$get_workspace(uri))
+        }
+    }
 
     if (length(index_settings)) {
         for (workspace in self$workspaces$values()) {

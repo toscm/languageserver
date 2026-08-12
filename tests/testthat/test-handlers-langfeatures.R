@@ -201,6 +201,10 @@ test_that("initialization handles trace and multiple workspace folders", {
         self$added <- c(self$added, uri)
         self$workspaces$set(uri, uri)
     }
+    self$add_workspace_tree <- function(uri) {
+        self$add_workspace(uri)
+        uri
+    }
     self$deliver <- function(message) {
         self$deliveries[[length(self$deliveries) + 1L]] <- message
     }

@@ -390,6 +390,52 @@ is_package <- function(rootPath) {
     length(file) && file.exists(file) && !dir.exists(file)
 }
 
+
+# Directories that never contain a project of interest but may be huge.
+nested_packages_skip_dirs <- c(
+    "renv", "packrat", "node_modules", "revdep", "vendor", "__pycache__"
+)
+
+#' find R packages nested inside a workspace folder
+#'
+#' Scans `rootPath` for sub-directories that are R packages, i.e. that contain a
+#' `DESCRIPTION` file, descending at most `depth` levels below `rootPath`.
+#' `rootPath` itself is never returned, and the scan does not descend into a
+#' directory that has been identified as a package.
+#'
+#' @param rootPath a character representing the workspace folder to scan
+#' @param depth a number, the maximal directory depth to descend into.
+#'   `0` disables scanning, `Inf` scans the whole tree.
+#'
+#' @noRd
+find_nested_packages <- function(rootPath, depth = 0) {
+    if (!length(depth) || !length(rootPath) || is.na(depth)) {
+        return(character(0))
+    }
+    if (depth < 1 || !dir.exists(rootPath)) {
+        return(character(0))
+    }
+    found <- character(0)
+    level <- rootPath
+    i <- 0
+    while (i < depth && length(level)) {
+        level <- list.dirs(level, recursive = FALSE, full.names = TRUE)
+        dir_names <- basename(level)
+        level <- level[
+            !startsWith(dir_names, ".") & !(dir_names %in% nested_packages_skip_dirs)
+        ]
+        if (!length(level)) {
+            break
+        }
+        is_pkg <- vapply(level, is_package, logical(1L), USE.NAMES = FALSE)
+        found <- c(found, level[is_pkg])
+        # do not descend into a package, its sub-directories are its own
+        level <- level[!is_pkg]
+        i <- i + 1
+    }
+    found
+}
+
 get_root_path_for_uri <- function(uri, rootPath) {
     if (length(rootPath)) {
         # valid workspace folder

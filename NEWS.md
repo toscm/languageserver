@@ -1,3 +1,11 @@
+# languageserver (development version)
+
+- Add a `nested_packages_depth` setting that makes the server scan each
+  workspace folder for R packages in sub-directories and register every package
+  it finds as a workspace of its own, so that a workspace holding several
+  packages, or a package below the top level of the project, provides workspace
+  symbols and cross-file definitions without opening each file first (#619).
+
 # languageserver 0.3.18
 
 - Add a shared Quarto/R Markdown region model with `.qmd` and Quarto language

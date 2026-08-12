@@ -5,3 +5,6 @@
 .Rhistory
 .vscode
 CRAN-RELEASE
+
+# Downloaded upstream issues (local research only)
+.issues/
