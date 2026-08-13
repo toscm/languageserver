@@ -1,4 +1,4 @@
-# languageserver (development version)
+# languageserver 0.3.18.7056
 
 - Add a `nested_packages_depth` setting that makes the server scan each
   workspace folder for R packages in sub-directories and register every package
