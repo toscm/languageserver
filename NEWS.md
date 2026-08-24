@@ -1,3 +1,19 @@
+# languageserver 0.3.18.7057
+
+- Merge upstream master (project-wide indexing, Quarto/R Markdown region model,
+  extract and inline refactorings, task-manager reliability fixes, and more; see
+  the 0.3.18 entries below).
+
+- No longer emit semantic tokens for comments.
+  A whole-line `comment` semantic token overrides the editor's TextMate scopes
+  in VS Code and destroyed the distinct coloring of roxygen tags such as
+  `#' @param` and `#' @export`.
+
+- Deduplicate workspace symbols that are reported by both a nested package
+  workspace and the project-wide index of the workspace containing it.
+
+- Document this fork's differences to the upstream repository in the README.
+
 # languageserver 0.3.18.7056
 
 - Add a `nested_packages_depth` setting that makes the server scan each
