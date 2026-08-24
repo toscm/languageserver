@@ -434,8 +434,10 @@ find_nested_packages <- function(rootPath, depth = 0) {
         i <- i + 1
     }
     # list.dirs() joins with "/", so a Windows rootPath yields mixed
-    # separators; normalize to forward slashes like index_normalize_path()
-    normalizePath(found, winslash = "/")
+    # separators; convert to forward slashes without resolving symlinks or
+    # short names (normalizePath would), so the results stay in the same
+    # path spelling as `rootPath` and the uris derived from it
+    vapply(found, index_normalize_path, character(1L), USE.NAMES = FALSE)
 }
 
 get_root_path_for_uri <- function(uri, rootPath) {
