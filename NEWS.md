@@ -1,3 +1,14 @@
+# languageserver 0.3.18.7058
+
+- Fix nested package discovery on Windows and macOS.
+  The scanned paths kept mixed separators on Windows, and after the first fix
+  attempt were symlink- and short-name-resolved into a different spelling than
+  the workspace root, which broke workspace-symbol deduplication.
+  Nested package paths now only get their separators normalized and stay in the
+  caller's path spelling.
+
+- Run the R-CMD-check workflow on `main` and allow dispatching it manually.
+
 # languageserver 0.3.18.7057
 
 - Merge upstream master (project-wide indexing, Quarto/R Markdown region model,
