@@ -258,10 +258,10 @@ test_that("find_nested_packages scans a workspace for nested packages", {
             c(paste0("Package: ", basename(path)), "Version: 0.0.1"),
             file.path(path, "DESCRIPTION")
         )
-        normalizePath(path)
+        normalizePath(path, winslash = "/")
     }
 
-    root <- normalizePath(withr::local_tempdir())
+    root <- normalizePath(withr::local_tempdir(), winslash = "/")
     pkg_a <- make_package(root, "pkga")
     pkg_b <- make_package(root, "nested", "pkgb")
     dir.create(file.path(root, "not-a-package"))
