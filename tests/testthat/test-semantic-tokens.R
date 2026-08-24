@@ -180,6 +180,24 @@ test_that("Semantic parse data handles UTF-16 and multiline tokens", {
     )
 })
 
+test_that("Semantic parse data emits no tokens for comments", {
+    content <- c(
+        "#' @param x A number.",
+        "#' @export",
+        "f <- function(x) x  # plain comment"
+    )
+    parsed <- parse(text = content, keep.source = TRUE)
+    data <- utils::getParseData(parsed, includeText = TRUE)
+
+    semantic <- semantic_parse_data(data, content)
+
+    expect_gt(length(semantic$types), 0L)
+    expect_false(SemanticTokenTypes$comment %in% semantic$types)
+    # The roxygen-only lines must stay untouched so the client grammar
+    # keeps coloring them.
+    expect_false(any(semantic$lines %in% c(0L, 1L)))
+})
+
 test_that("Semantic ranges select overlapping tokens and re-encode them", {
     fixture <- provider_fixture(c("alpha <- 1", "beta <- alpha", "gamma <- 3"))
     data <- fixture$document$parse_data$semantic_data
@@ -286,7 +304,6 @@ test_that("Semantic token types cover every parser token category", {
         FLOAT_CONST = SemanticTokenTypes$number,
         STRING = SemanticTokenTypes$string,
         STR_CONST = SemanticTokenTypes$string,
-        COMMENT = SemanticTokenTypes$comment,
         LEFT_ASSIGN = SemanticTokenTypes$operator,
         RIGHT_ASSIGN = SemanticTokenTypes$operator,
         EQ_ASSIGN = SemanticTokenTypes$operator,

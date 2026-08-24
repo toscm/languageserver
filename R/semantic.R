@@ -91,7 +91,9 @@ semantic_parse_data <- function(data, content) {
         FLOAT_CONST = SemanticTokenTypes$number,
         STRING = SemanticTokenTypes$string,
         STR_CONST = SemanticTokenTypes$string,
-        COMMENT = SemanticTokenTypes$comment,
+        # COMMENT is deliberately not mapped: a whole-line `comment` semantic
+        # token overrides the editor's TextMate scopes and thereby kills the
+        # distinct coloring of roxygen tags like `#' @param` in VS Code.
         LEFT_ASSIGN = SemanticTokenTypes$operator,
         RIGHT_ASSIGN = SemanticTokenTypes$operator,
         EQ_ASSIGN = SemanticTokenTypes$operator,
@@ -304,7 +306,6 @@ get_token_type <- function(token_name) {
         "FLOAT_CONST" = SemanticTokenTypes$number,
         "STRING" = SemanticTokenTypes$string,
         "STR_CONST" = SemanticTokenTypes$string,
-        "COMMENT" = SemanticTokenTypes$comment,
         "LEFT_ASSIGN" = SemanticTokenTypes$operator,
         "RIGHT_ASSIGN" = SemanticTokenTypes$operator,
         "EQ_ASSIGN" = SemanticTokenTypes$operator,
@@ -355,7 +356,6 @@ extract_semantic_tokens <- function(uri, workspace, document, range = NULL) {
         self::FLOAT_CONST or
         self::STRING or
         self::STR_CONST or
-        self::COMMENT or
         self::LEFT_ASSIGN or
         self::RIGHT_ASSIGN or
         self::EQ_ASSIGN or
