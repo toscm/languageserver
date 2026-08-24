@@ -21,12 +21,17 @@ symbol_range <- function(symbol) {
 
 language_client <- function(working_dir = getwd(), workspace_folders = NULL, diagnostics = FALSE, capabilities = NULL) {
 
+    # clear options a user's .Rprofile may set, since they mask LSP settings
+    neutral_options <- paste0(
+        "options(languageserver.formatting_style = NULL, ",
+        "languageserver.nested_packages_depth = NULL)"
+    )
     if (nzchar(Sys.getenv("R_LANGSVR_LOG"))) {
         script <- sprintf(
-            "options(languageserver.formatting_style = NULL); languageserver::run(debug = '%s')",
+            "%s; languageserver::run(debug = '%s')", neutral_options,
             normalizePath(Sys.getenv("R_LANGSVR_LOG"), "/", mustWork = FALSE))
     } else {
-        script <- "options(languageserver.formatting_style = NULL); languageserver::run()"
+        script <- sprintf("%s; languageserver::run()", neutral_options)
     }
 
     client <- LanguageClient$new(
