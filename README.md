@@ -8,6 +8,7 @@
 
 `languageserver` is an implementation of the Microsoft's [Language Server Protocol](https://microsoft.github.io/language-server-protocol/) for the language of R.
 
+- [About this fork](#about-this-fork)
 - [Installation](#installation)
 - [Language Clients](#language-clients)
 - [Services Implemented](#services-implemented)
@@ -16,6 +17,25 @@
   - [Linters](#linters)
   - [Customizing server capabilities](#customizing-server-capabilities)
   - [Customizing formatting style](#customizing-formatting-style)
+
+## About this fork
+
+This repository (`toscm/languageserver`) is a personal fork of [REditorSupport/languageserver](https://github.com/REditorSupport/languageserver).
+The changes here are my personal adjustments and will most likely not get merged back into the upstream repository.
+This means I can implement things that are useful to me without caring whether they make sense for others.
+
+Differences to upstream:
+
+- Nested package discovery.
+  The `r.lsp.nested_packages_depth` setting makes the server scan each workspace folder for R packages in sub-directories and register every package it finds as a workspace of its own, so that a folder containing multiple repositories at once is fully indexed.
+  See [Nested R packages](#nested-r-packages) below.
+
+- No semantic tokens for comments.
+  Upstream emits a whole-line `comment` semantic token for every comment, which in VS Code overrides the TextMate grammar and destroys the distinct coloring of roxygen tags like `#' @param` and `#' @export`.
+  This fork does not emit semantic tokens for comments, so the editor grammar keeps coloring them.
+
+- Four-component version numbers.
+  Fork builds use a fourth version component (e.g. `0.3.18.7056`) so they are identifiable at runtime and a plain `install.packages("languageserver")` reads as a downgrade instead of silently replacing the patched package.
 
 ## Installation
 
