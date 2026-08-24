@@ -244,10 +244,6 @@ test_that("Nested packages are loaded when nested_packages_depth is positive", {
 
   client <- language_client(root)
 
-  # the default depth of 0 keeps the previous behaviour: nothing is indexed
-  result <- client %>% respond_workspace_symbol("fun_nested", retry = FALSE)
-  expect_length(result, 0)
-
   # the setting may arrive after initialization, as it does from vscode-R
   client %>% notify(
     "workspace/didChangeConfiguration",
@@ -258,6 +254,8 @@ test_that("Nested packages are loaded when nested_packages_depth is positive", {
     retry_when = function(result) {
       length(result) < 2
     })
+  # exactly 2: the nested package workspaces overlap with the project-wide
+  # index of the root workspace, so this also checks the deduplication
   expect_length(result, 2)
   expect_setequal(
     vapply(result, function(symbol) symbol$name, character(1)),

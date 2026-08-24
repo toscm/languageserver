@@ -186,9 +186,22 @@ document_symbol_reply <- function(id, uri, workspace, document, capabilities) {
 #' Get all the symbols in the workspace matching a query
 #' @noRd
 workspace_symbol_reply <- function(id, workspaces, query) {
+    # a nested package workspace overlaps with the project-wide index of the
+    # workspace that contains it, so the same definition can be reported by
+    # two workspaces and has to be deduplicated
     defns <- list()
+    seen <- new.env(hash = TRUE, parent = emptyenv())
     for (workspace in workspaces) {
-        defns <- c(defns, workspace$get_definitions_for_query(query))
+        for (def in workspace$get_definitions_for_query(query)) {
+            key <- paste(
+                def$uri, def$name,
+                paste(deparse(def$range), collapse = ""),
+                sep = "\1"
+            )
+            if (exists(key, envir = seen, inherits = FALSE)) next
+            assign(key, TRUE, envir = seen)
+            defns[[length(defns) + 1L]] <- def
+        }
     }
     logger$info("workspace symbols found: ", length(defns))
     result <- lapply(defns, function(def) {

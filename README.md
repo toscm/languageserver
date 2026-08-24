@@ -242,12 +242,11 @@ recognized; project code is never executed to resolve a path.
 
 ### Nested R packages
 
-By default, a workspace folder is indexed only if the folder itself is an R
-package, i.e. if it contains a `DESCRIPTION` file. Any other folder is not
-scanned at all, and only the files opened in the editor are known to the server.
-This means that a workspace holding several packages in sub-directories, or a
-package that does not sit at the top level of the project, provides no workspace
-symbols and no cross-file definitions until each file is opened.
+By default, a workspace folder is treated as a single workspace, even if it
+holds several R packages in sub-directories. The project-wide index still
+surfaces symbols from all R files below the folder, but the packages share one
+workspace, so they do not get their own document sets, namespace imports, and
+diagnostics globals.
 
 Setting `nested_packages_depth` to a positive number makes the server scan each
 workspace folder for R packages in sub-directories, and register every package it
