@@ -19,6 +19,27 @@ LanguageServer <- R6::R6Class("LanguageServer",
             close(self$inputcon)
             super$finalize()
         },
+        # package source files of `workspace` that belong to a nested package
+        # registered as a workspace of its own
+        foreign_package_uris = function(workspace, uris) {
+            if (!length(uris) || is.null(workspace$index)) return(character())
+            own_root <- index_normalize_path(workspace$root)
+            other_roots <- character()
+            for (other in self$workspaces$values()) {
+                if (length(other$root) && nzchar(other$root)) {
+                    root <- index_normalize_path(other$root)
+                    if (!identical(root, own_root)) {
+                        other_roots <- c(other_roots, root)
+                    }
+                }
+            }
+            if (!length(other_roots)) return(character())
+            uris[vapply(uris, function(uri) {
+                package_root <- workspace$index$files$get(uri)$package_root
+                !is.null(package_root) &&
+                    index_normalize_path(package_root) %in% other_roots
+            }, logical(1L))]
+        },
         workspace_load_key = function(workspace) {
             if (is.null(self$workspace_loads)) {
                 self$workspace_loads <- collections::ordered_dict()
@@ -343,7 +364,8 @@ LanguageServer <- R6::R6Class("LanguageServer",
                 }
                 self$workspace_loads$set(key, list(
                     workspace = workspace, phase = "files",
-                    uris = uris, position = 0L, index = FALSE
+                    uris = uris, foreign = character(), position = 0L,
+                    index = FALSE
                 ))
             } else {
                 depth <- lsp_settings$get("nested_packages_depth")
@@ -358,7 +380,8 @@ LanguageServer <- R6::R6Class("LanguageServer",
                 workspace$index$discover(budget_ms = 0)
                 self$workspace_loads$set(key, list(
                     workspace = workspace, phase = "discover",
-                    uris = character(), position = 0L, index = TRUE
+                    uris = character(), foreign = character(),
+                    position = 0L, index = TRUE
                 ))
             }
             if (blocking) {
@@ -413,6 +436,8 @@ LanguageServer <- R6::R6Class("LanguageServer",
                     done <- workspace$index$discover_step(max(remaining(), 0))
                     if (done) {
                         load$uris <- workspace$index$package_source_uris()
+                        load$foreign <- private$foreign_package_uris(
+                            workspace, load$uris)
                         load$phase <- "files"
                         self$workspace_loads$set(key, load)
                     }
@@ -421,11 +446,19 @@ LanguageServer <- R6::R6Class("LanguageServer",
                         if (load$position >= length(load$uris)) break
                         load$position <- load$position + 1L
                         uri <- load$uris[[load$position]]
-                        logger$info("load package file:", path_from_uri(uri))
-                        if (load$index && !workspace$index$summaries$has(uri)) {
-                            workspace$index$update_path(path_from_uri(uri))
+                        if (uri %in% load$foreign) {
+                            # the file belongs to a nested package that has
+                            # its own workspace, which loads and parses it;
+                            # only keep a summary for this workspace's index
+                            if (!workspace$index$summaries$has(uri)) {
+                                workspace$index$update_path(path_from_uri(uri))
+                            }
+                        } else {
+                            # the parse result of the document also
+                            # summarizes the file for the index
+                            logger$info("load package file:", path_from_uri(uri))
+                            self$load_index_document(workspace, uri)
                         }
-                        self$load_index_document(workspace, uri)
                         if (remaining() <= 0) break
                     }
                     if (load$position < length(load$uris)) {
@@ -436,7 +469,8 @@ LanguageServer <- R6::R6Class("LanguageServer",
                         }
                         self$workspace_loads$remove(key)
                         logger$info("workspace loaded:", workspace$root,
-                            "files:", length(load$uris))
+                            "files:", length(load$uris) - length(load$foreign),
+                            "nested:", length(load$foreign))
                     }
                 }
                 if (!self$workspace_loads$size() || remaining() <= 0) break

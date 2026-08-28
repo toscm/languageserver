@@ -266,3 +266,43 @@ test_that("removing a workspace drops its pending load", {
     expect_false(server$loading_workspaces())
     expect_false(server$load_workspaces_step())
 })
+
+test_that("a parent workspace leaves nested package files to their own workspace", {
+    old <- list(
+        diagnostics = lsp_settings$get("diagnostics"),
+        index_persistent_cache = lsp_settings$get("index_persistent_cache")
+    )
+    withr::defer(for (name in names(old)) lsp_settings$set(name, old[[name]]))
+    lsp_settings$set("diagnostics", FALSE)
+    lsp_settings$set("index_persistent_cache", FALSE)
+
+    root <- withr::local_tempdir()
+    writeLines("script <- 1", file.path(root, "script.R"))
+    nested <- file.path(root, "nested")
+    make_test_package(nested, c("n1", "n2"))
+
+    server <- BareLanguageServer$new()
+    withr::defer(server$close_connections())
+    server$parse_task_manager <- recording_task_manager()
+    server$diagnostics_task_manager <- recording_task_manager()
+    server$resolve_task_manager <- recording_task_manager()
+    parent <- Workspace$new(root)
+    child <- Workspace$new(nested)
+    server$workspaces$set(path_to_uri(root), parent)
+    server$workspaces$set(path_to_uri(nested), child)
+
+    server$load_workspaces(blocking = TRUE)
+
+    # the nested package's files are documents of the nested workspace only
+    expect_setequal(
+        basename(vapply(child$documents$keys(), path_from_uri, character(1L))),
+        c("n1.R", "n2.R")
+    )
+    expect_length(parent$documents$keys(), 0L)
+    # but the parent's index still knows them, e.g. for workspace symbols
+    expect_length(parent$index$package_source_uris(), 2L)
+    for (uri in parent$index$package_source_uris()) {
+        expect_true(parent$index$summaries$has(uri))
+    }
+    expect_length(server$parse_task_manager$tasks, 2L)
+})
