@@ -1,3 +1,20 @@
+# languageserver 0.3.18.7059
+
+- Load workspaces incrementally so that requests are answered during startup.
+  Loading a workspace (discovering its files, creating and parsing a document for every package source file, importing the NAMESPACE) used to run to completion inside the `initialized` handler, which blocked the event loop for tens of seconds in a folder with many nested packages and left the outline on "Loading document symbols" meanwhile.
+  The work is now sliced into steps of `load_time_budget_ms` (default 50) milliseconds that the event loop runs between requests; file discovery itself is resumable (`WorkspaceIndex$discover_step()`).
+  Parsing keeps running in the parse worker sessions, so up to four files are parsed in parallel while the main process only integrates the results.
+  `load_workspace(blocking = TRUE)` restores the old synchronous behaviour.
+
+- Speed up file discovery about tenfold.
+  Path containment is checked with a string comparison instead of `fs::path_has_parent()`, only symlinks are canonicalized, glob regexes are compiled once per pattern, and package roots are cached per directory.
+  Discovering the roughly 1500 R files under `~/repos` went from 15 s to under 2 s.
+
+- Nest document symbols by range in the hierarchical outline.
+  Sections (`# Fit ####`) and definitions used to be reported as a flat list of overlapping siblings, so clients showed a section merely as one more entry among the functions it spans.
+  Every symbol is now a child of the innermost symbol whose range contains it: a section lists the definitions written under it, a function lists its sub-sections, and existing class members are kept.
+  Sections are reported as `Module` instead of `String` symbols so that they are not affected by the outline's string filter in VS Code.
+
 # languageserver 0.3.18.7058
 
 - Fix nested package discovery on Windows and macOS.
