@@ -12,6 +12,16 @@ expect_equivalent <- function(x, y) {
     expect_equal(x, y, ignore_attr = TRUE)
 }
 
+flatten_symbols <- function(symbols) {
+    out <- list()
+    for (symbol in symbols) {
+        children <- symbol$children
+        symbol$children <- NULL
+        out <- c(out, list(symbol), flatten_symbols(children))
+    }
+    out
+}
+
 symbol_range <- function(symbol) {
     if (!is.null(symbol$location)) {
         return(symbol$location$range)

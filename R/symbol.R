@@ -107,9 +107,9 @@ document_symbol_reply <- function(id, uri, workspace, document, capabilities) {
             document_symbol(
                 name = section$name,
                 kind = switch(section$type,
-                    section = SymbolKind$String,
+                    section = SymbolKind$Module,
                     chunk = SymbolKind$Key,
-                    SymbolKind$String
+                    SymbolKind$Module
                 ),
                 range = range(
                     start = document$to_lsp_position(
@@ -134,7 +134,7 @@ document_symbol_reply <- function(id, uri, workspace, document, capabilities) {
             )
         })
         
-        result <- c(definition_symbols, section_symbols)
+        result <- nest_document_symbols(c(definition_symbols, section_symbols))
     } else {
         # Use flat SymbolInformation format for backward compatibility
         definition_symbols <- lapply(names(defns), function(name) {
@@ -181,6 +181,64 @@ document_symbol_reply <- function(id, uri, workspace, document, capabilities) {
     }
 
     Response$new(id, result = result)
+}
+
+#' Nest document symbols by range containment
+#'
+#' Sections and definitions are collected as a flat list whose ranges overlap:
+#' a section spans every definition written under its heading, and a function
+#' can contain sub-sections. Clients such as VS Code only nest what the server
+#' nests, so build the tree here: every symbol becomes a child of the innermost
+#' symbol whose range contains it, and the top level keeps the rest.
+#' Children a symbol already has (e.g. class members) are kept and the nested
+#' symbols are appended after them. The output is sorted by position.
+#' @noRd
+nest_document_symbols <- function(symbols) {
+    n <- length(symbols)
+    if (n <= 1L) {
+        return(symbols)
+    }
+
+    start_line <- vapply(symbols, function(s) s$range$start$line, numeric(1))
+    start_char <- vapply(symbols, function(s) s$range$start$character, numeric(1))
+    end_line <- vapply(symbols, function(s) s$range$end$line, numeric(1))
+    end_char <- vapply(symbols, function(s) s$range$end$character, numeric(1))
+
+    # by start ascending, then by end descending, so that a container is
+    # visited before everything it contains
+    ord <- order(start_line, start_char, -end_line, -end_char)
+    symbols <- symbols[ord]
+    start_line <- start_line[ord]
+    start_char <- start_char[ord]
+    end_line <- end_line[ord]
+    end_char <- end_char[ord]
+
+    ends_before <- function(i, j) {
+        end_line[i] < end_line[j] ||
+            (end_line[i] == end_line[j] && end_char[i] <= end_char[j])
+    }
+
+    # parent[i] is the index of the innermost container of symbol i, or 0
+    parent <- integer(n)
+    stack <- integer(0)
+    for (i in seq_len(n)) {
+        while (length(stack) && !ends_before(i, stack[length(stack)])) {
+            stack <- stack[-length(stack)]
+        }
+        parent[i] <- if (length(stack)) stack[length(stack)] else 0L
+        stack <- c(stack, i)
+    }
+
+    # attach children bottom-up so nested subtrees are complete before they
+    # are attached to their own parent
+    for (i in rev(seq_len(n))) {
+        children <- which(parent == i)
+        if (length(children)) {
+            symbols[[i]]$children <- c(symbols[[i]]$children, symbols[children])
+        }
+    }
+
+    symbols[parent == 0L]
 }
 
 #' Get all the symbols in the workspace matching a query

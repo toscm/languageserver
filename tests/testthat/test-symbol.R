@@ -76,8 +76,9 @@ test_that("hierarchical symbols attempt member extraction for classes", {
         list(hierarchicalDocumentSymbolSupport = TRUE)
     )
 
+    # the class sits under the `Main` section in the hierarchical tree
     expect_true(any(vapply(
-        reply$result,
+        flatten_symbols(reply$result),
         function(item) identical(item$name, "Widget"),
         logical(1L)
     )))
@@ -187,8 +188,25 @@ test_that("Document section symbol works", {
     ), defn_file)
 
     client %>% did_open(defn_file)
-    result <- client %>% respond_document_symbol(defn_file)
+    tree <- client %>% respond_document_symbol(defn_file)
 
+    # sections contain the definitions written under them and a function
+    # contains its sub-sections
+    expect_identical(map_chr(tree, ~ .$name), c("section1", "section2"))
+    expect_identical(
+        map_chr(tree[[1]]$children, ~ .$name), "f"
+    )
+    expect_identical(
+        map_chr(tree[[1]]$children[[1]]$children, ~ .$name),
+        c("step1", "step2")
+    )
+    expect_identical(
+        map_chr(tree[[2]]$children, ~ .$name), c("g", "p", "m")
+    )
+    expect_equal(tree[[1]]$kind, SymbolKind$Module)
+    expect_equal(tree[[1]]$children[[1]]$kind, SymbolKind$Function)
+
+    result <- flatten_symbols(tree)
     expect_setequal(
         result %>% map_chr(~ .$name),
         c("section1", "f", "step1", "step2", "section2", "g", "p", "m")
@@ -225,6 +243,116 @@ test_that("Document section symbol works", {
         result %>% detect(~ .$name == "m") %>% symbol_range(),
         range(position(10, 0), position(12, 1))
     )
+})
+
+test_that("Document symbols without sections stay flat", {
+    skip_on_cran()
+    client <- language_client(capabilities = list(
+        textDocument = list(
+            documentSymbol = list(hierarchicalDocumentSymbolSupport = TRUE)
+        )
+    ))
+
+    defn_file <- withr::local_tempfile(fileext = ".R")
+    writeLines(c(
+        "f <- function(x) x + 1",
+        "g <- function(x) x - 1"
+    ), defn_file)
+
+    client %>% did_open(defn_file)
+    result <- client %>% respond_document_symbol(defn_file)
+    expect_identical(map_chr(result, ~ .$name), c("f", "g"))
+    expect_true(all(map_lgl(result, ~ is.null(.$children))))
+})
+
+test_that("Definitions before the first section stay at the top level", {
+    skip_on_cran()
+    client <- language_client(capabilities = list(
+        textDocument = list(
+            documentSymbol = list(hierarchicalDocumentSymbolSupport = TRUE)
+        )
+    ))
+
+    defn_file <- withr::local_tempfile(fileext = ".R")
+    writeLines(c(
+        "pre <- 1",
+        "# Fit ####",
+        "fit <- function(x) x",
+        "## Details ====",
+        "detail <- 2",
+        "# Apply ####",
+        "apply_fit <- function(x) x"
+    ), defn_file)
+
+    client %>% did_open(defn_file)
+    result <- client %>% respond_document_symbol(defn_file)
+    expect_identical(map_chr(result, ~ .$name), c("pre", "Fit", "Apply"))
+    fit <- result[[2]]
+    expect_identical(map_chr(fit$children, ~ .$name), c("fit", "Details"))
+    expect_identical(
+        map_chr(fit$children[[2]]$children, ~ .$name), "detail"
+    )
+    expect_identical(map_chr(result[[3]]$children, ~ .$name), "apply_fit")
+})
+
+test_that("Flat symbol information is not nested", {
+    skip_on_cran()
+    client <- language_client(capabilities = list(
+        textDocument = list(
+            documentSymbol = list(hierarchicalDocumentSymbolSupport = FALSE)
+        )
+    ))
+
+    defn_file <- withr::local_tempfile(fileext = ".R")
+    writeLines(c(
+        "# Fit ####",
+        "fit <- function(x) x"
+    ), defn_file)
+
+    client %>% did_open(defn_file)
+    result <- client %>% respond_document_symbol(defn_file)
+    expect_setequal(map_chr(result, ~ .$name), c("Fit", "fit"))
+    expect_true(all(map_lgl(result, ~ !is.null(.$location))))
+})
+
+test_that("nest_document_symbols nests by range containment", {
+    sym <- function(name, start, end, children = NULL) {
+        document_symbol(
+            name = name, kind = SymbolKind$Function,
+            range = range(position(start, 0), position(end, 0)),
+            selectionRange = range(position(start, 0), position(start, 1)),
+            children = children
+        )
+    }
+    names_of <- function(x) vapply(x, `[[`, character(1), "name")
+
+    expect_identical(nest_document_symbols(list()), list())
+    single <- list(sym("a", 0, 1))
+    expect_identical(nest_document_symbols(single), single)
+
+    # unsorted input, containers visited before their content
+    tree <- nest_document_symbols(list(
+        sym("inner", 2, 3),
+        sym("outer", 0, 10),
+        sym("mid", 1, 5),
+        sym("sibling", 6, 8),
+        sym("last", 11, 12)
+    ))
+    expect_identical(names_of(tree), c("outer", "last"))
+    expect_identical(names_of(tree[[1]]$children), c("mid", "sibling"))
+    expect_identical(names_of(tree[[1]]$children[[1]]$children), "inner")
+    expect_null(tree[[2]]$children)
+
+    # a symbol that ends exactly where its container ends is still contained
+    tree <- nest_document_symbols(list(sym("outer", 0, 5), sym("tail", 3, 5)))
+    expect_identical(names_of(tree[[1]]$children), "tail")
+
+    # existing children (e.g. class members) are kept ahead of nested symbols
+    tree <- nest_document_symbols(list(
+        sym("cls", 0, 5, children = list(sym("member", 1, 1))),
+        sym("part", 2, 3)
+    ))
+    expect_identical(names_of(tree[[1]]$children), c("member", "part"))
 })
 
 test_that("Workspace Symbol works", {
@@ -338,7 +466,7 @@ test_that("Document section symbol works in Rmarkdown", {
     ), defn_file)
 
     client %>% did_open(defn_file)
-    result <- client %>% respond_document_symbol(defn_file)
+    result <- flatten_symbols(client %>% respond_document_symbol(defn_file))
 
     expect_setequal(
         result %>% map_chr(~ .$name),
