@@ -61,7 +61,13 @@ test_that("lintr config file works", {
     expect_setequal(vapply(data$diagnostics, "[[", character(1), "code"),
         c("infix_spaces_linter"))
 
-    writeLines("linters: list()", lintr_file)
+    # lintr >= 3.2 treats an empty `linters: list()` as "not configured" and
+    # falls back to its defaults, so a config that must produce no lints
+    # needs a linter that never reports anything
+    writeLines(
+        "linters: list(silent = Linter(function(source_expression) list()))",
+        lintr_file
+    )
 
     client <- language_client(working_dir = dir, diagnostics = TRUE)
 
