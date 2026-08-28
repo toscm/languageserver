@@ -363,3 +363,16 @@ test_that("Go to Definition works for file paths", {
     result <- client %>% respond_definition(query_file, c(1, 9))
     expect_equal(result$uri, path_to_uri(defn_file))
 })
+
+test_that("definition_reply works without an explicit rootPath", {
+    fixture <- provider_fixture(c(
+        "f <- function(x) x",
+        "f(1)"
+    ))
+    reply <- definition_reply(
+        1L, fixture$uri, fixture$workspace, fixture$document,
+        list(row = 1L, col = 0L)
+    )
+    expect_s3_class(reply, "Response")
+    expect_equal(reply$result$range$start$line, 0)
+})
