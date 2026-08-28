@@ -316,3 +316,87 @@ test_that("references and code lenses include source dependents", {
         )
     ))
 })
+
+test_that("stepwise discovery finds the same files as a full walk", {
+    local_index_settings(index_persistent_cache = FALSE)
+    root <- withr::local_tempdir()
+    for (dir in c("a", "b", "b/c", "d")) {
+        dir.create(file.path(root, dir), recursive = TRUE)
+        writeLines("x <- 1", file.path(root, dir, "code.R"))
+    }
+    writeLines("top <- 1", file.path(root, "top.R"))
+
+    full <- WorkspaceIndex$new(root)
+    full$discover()
+    expect_false(full$discovering)
+
+    stepwise <- WorkspaceIndex$new(root)
+    done <- stepwise$discover(budget_ms = 0)
+    expect_true(stepwise$discovering)
+    steps <- 0L
+    while (!done) {
+        steps <- steps + 1L
+        done <- stepwise$discover_step(budget_ms = 0)
+    }
+    expect_false(stepwise$discovering)
+    # a zero budget visits one directory per step
+    expect_gt(steps, 1L)
+    expect_setequal(stepwise$files$keys(), full$files$keys())
+    expect_setequal(stepwise$pending, full$pending)
+    expect_identical(stepwise$truncated, full$truncated)
+
+    # a finished discovery is idempotent for further steps
+    expect_true(stepwise$discover_step())
+})
+
+test_that("stepwise discovery honours the file limit", {
+    local_index_settings(index_persistent_cache = FALSE, index_max_files = 2L)
+    root <- withr::local_tempdir()
+    for (name in c("a", "b", "c", "d")) {
+        writeLines("x <- 1", file.path(root, paste0(name, ".R")))
+    }
+    index <- WorkspaceIndex$new(root)
+    done <- index$discover(budget_ms = 0)
+    while (!done) done <- index$discover_step(budget_ms = 0)
+    expect_length(index$files$keys(), 2L)
+    expect_true(index$truncated)
+})
+
+test_that("should_index uses cheap path checks and keeps its semantics", {
+    local_index_settings(index_persistent_cache = FALSE)
+    root <- withr::local_tempdir()
+    dir.create(file.path(root, "renv"))
+    index <- WorkspaceIndex$new(root)
+
+    expect_true(index$should_index(file.path(root, "a.R")))
+    expect_true(index$should_index(file.path(root, "sub", "a.R")))
+    expect_false(index$should_index(file.path(root, "a.txt")))
+    expect_false(index$should_index(file.path(root, "renv", "a.R")))
+    expect_false(index$should_index(file.path(root, "renv"), directory = TRUE))
+    expect_true(index$should_index(file.path(root, "sub"), directory = TRUE))
+    # a sibling whose name merely starts with the root is outside
+    expect_false(index$should_index(paste0(root, "x/a.R")))
+    expect_false(index$should_index(file.path(dirname(root), "a.R")))
+    expect_false(index$should_index(""))
+    expect_true(index$contains_path(root))
+    expect_false(index$contains_path(paste0(root, "x")))
+})
+
+test_that("index_relative_path only accepts paths below the root", {
+    expect_identical(index_relative_path("/w/a/b.R", "/w"), "a/b.R")
+    expect_identical(index_relative_path("/w/a/b.R", "/w/"), "a/b.R")
+    expect_identical(index_relative_path("/w", "/w"), ".")
+    expect_null(index_relative_path("/wx/a.R", "/w"))
+    expect_null(index_relative_path("/v/a.R", "/w"))
+    expect_null(index_relative_path("/w/a.R", NULL))
+})
+
+test_that("glob regexes are compiled once per pattern", {
+    rm(list = ls(index_glob_regex_cache), envir = index_glob_regex_cache)
+    first <- index_glob_regex("**/*.R")
+    expect_identical(first, index_glob_regex_compile("**/*.R"))
+    expect_true(exists("**/*.R", envir = index_glob_regex_cache))
+    expect_identical(index_glob_regex("**/*.R"), first)
+    expect_true(grepl(first, "sub/dir/file.R", perl = TRUE, ignore.case = TRUE))
+    expect_false(grepl(first, "sub/dir/file.txt", perl = TRUE, ignore.case = TRUE))
+})

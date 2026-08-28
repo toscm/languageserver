@@ -18,6 +18,16 @@ LanguageServer <- R6::R6Class("LanguageServer",
         finalize = function() {
             close(self$inputcon)
             super$finalize()
+        },
+        workspace_load_key = function(workspace) {
+            if (is.null(self$workspace_loads)) {
+                self$workspace_loads <- collections::ordered_dict()
+            }
+            if (length(workspace$root) && nzchar(workspace$root)) {
+                workspace$root
+            } else {
+                DEFAULT_WORKSPACE
+            }
         }
     ),
     public = list(
@@ -38,6 +48,9 @@ LanguageServer <- R6::R6Class("LanguageServer",
         parse_task_manager = NULL,
         resolve_task_manager = NULL,
         pending_replies = NULL,
+        # workspaces whose files are still being loaded, keyed by workspace
+        # key; see `load_workspace()`
+        workspace_loads = NULL,
         initialize = function(host, port) {
             if (is.null(port)) {
                 logger$info("connection type: stdio")
@@ -72,6 +85,7 @@ LanguageServer <- R6::R6Class("LanguageServer",
             self$resolve_task_manager <- TaskManager$new("resolve")
 
             self$pending_replies <- collections::dict()
+            self$workspace_loads <- collections::ordered_dict()
             self$workspaces <- collections::dict()
             self$workspace_cache <- collections::dict()
             self$workspaces$set(DEFAULT_WORKSPACE, Workspace$new(NULL))
@@ -84,6 +98,7 @@ LanguageServer <- R6::R6Class("LanguageServer",
             self$resolve_task_manager$check_tasks()
             # Start latency-sensitive parse work before diagnostics.
             self$parse_task_manager$run_tasks()
+            self$load_workspaces_step()
             if (!self$parse_task_manager$has_work()) {
                 for (workspace in self$workspaces$values()) {
                     if (!is.null(workspace$index) &&
@@ -155,6 +170,10 @@ LanguageServer <- R6::R6Class("LanguageServer",
                     if (isTRUE(doc$is_open)) {
                         self$workspaces$get(DEFAULT_WORKSPACE)$documents$set(doc_uri, doc)
                     }
+                }
+                load_key <- private$workspace_load_key(workspace)
+                if (self$workspace_loads$has(load_key)) {
+                    self$workspace_loads$remove(load_key)
                 }
                 self$workspaces$remove(key)
                 self$workspace_cache$clear()
@@ -300,42 +319,129 @@ LanguageServer <- R6::R6Class("LanguageServer",
             invisible(NULL)
         },
 
-        load_workspace = function(workspace) {
+        #' Schedule loading the files of a workspace
+        #'
+        #' Loading a workspace means discovering its files and creating a
+        #' document for every package source file so that it is parsed (in
+        #' the parse worker sessions) and indexed. A large workspace takes
+        #' many seconds for that, so the work is not done here but in small
+        #' time slices from `load_workspaces_step()`, which the event loop
+        #' calls between requests. Calling this again for a workspace that
+        #' is still loading restarts its load from scratch.
+        #' Pass `blocking = TRUE` to load the workspace before returning.
+        load_workspace = function(workspace, blocking = FALSE) {
+            key <- private$workspace_load_key(workspace)
             if (is.null(workspace$index) || !isTRUE(workspace$index$enabled)) {
+                uris <- character()
                 if (is_package(workspace$root)) {
                     source_dir <- file.path(workspace$root, "R")
                     files <- list.files(
                         source_dir, pattern = "\\.r$", ignore.case = TRUE)
-                    for (file in files) {
-                        self$load_index_document(
-                            workspace,
-                            path_to_uri(file.path(source_dir, file))
-                        )
+                    uris <- vapply(files, function(file) {
+                        path_to_uri(file.path(source_dir, file))
+                    }, character(1L), USE.NAMES = FALSE)
+                }
+                self$workspace_loads$set(key, list(
+                    workspace = workspace, phase = "files",
+                    uris = uris, position = 0L, index = FALSE
+                ))
+            } else {
+                depth <- lsp_settings$get("nested_packages_depth")
+                if (length(depth) && !is.na(depth) && depth < 0) {
+                    # a negative depth opts out of indexing packages altogether
+                    if (self$workspace_loads$has(key)) {
+                        self$workspace_loads$remove(key)
                     }
-                    workspace$import_from_namespace_file()
+                    return(invisible(NULL))
                 }
-                return(invisible(NULL))
+                logger$info("load workspace:", workspace$root)
+                workspace$index$discover(budget_ms = 0)
+                self$workspace_loads$set(key, list(
+                    workspace = workspace, phase = "discover",
+                    uris = character(), position = 0L, index = TRUE
+                ))
             }
-            depth <- lsp_settings$get("nested_packages_depth")
-            if (length(depth) && !is.na(depth) && depth < 0) {
-                # a negative depth opts out of indexing packages altogether
-                return(invisible(NULL))
-            }
-            logger$info("load workspace:", workspace$root)
-            workspace$index$discover()
-            for (uri in workspace$index$package_source_uris()) {
-                logger$info("load package file:", path_from_uri(uri))
-                if (!workspace$index$summaries$has(uri)) {
-                    workspace$index$update_path(path_from_uri(uri))
+            if (blocking) {
+                while (self$workspace_loads$has(key)) {
+                    self$load_workspaces_step(Inf)
                 }
-                self$load_index_document(workspace, uri)
             }
-            if (is_package(workspace$root)) workspace$import_from_namespace_file()
+            invisible(NULL)
         },
-        load_workspaces = function() {
+        load_workspaces = function(blocking = FALSE) {
             for (workspace in self$workspaces$values()) {
                 self$load_workspace(workspace)
             }
+            if (blocking) {
+                while (self$workspace_loads$size()) {
+                    self$load_workspaces_step(Inf)
+                }
+            }
+            invisible(NULL)
+        },
+        #' Whether any workspace is still being loaded
+        loading_workspaces = function() {
+            !is.null(self$workspace_loads) && self$workspace_loads$size() > 0L
+        },
+        #' Do at most `budget_ms` milliseconds of pending workspace loading
+        #'
+        #' Workspaces are loaded one after the other in the order they were
+        #' scheduled. Discovery of a workspace's files comes first, then one
+        #' document per package source file is created, which parses and
+        #' indexes it; finally the package NAMESPACE is imported.
+        load_workspaces_step = function(budget_ms = NULL) {
+            if (!self$loading_workspaces()) return(invisible(FALSE))
+            if (is.null(budget_ms)) {
+                budget_ms <- suppressWarnings(as.numeric(
+                    lsp_settings$get("load_time_budget_ms")))
+                if (length(budget_ms) != 1L || is.na(budget_ms) ||
+                        budget_ms <= 0) {
+                    budget_ms <- 50
+                }
+            }
+            started <- proc.time()[[3L]]
+            remaining <- function() {
+                budget_ms - (proc.time()[[3L]] - started) * 1000
+            }
+            # every call makes progress on at least one directory or file,
+            # even with an exhausted budget, so a load can never stall
+            repeat {
+                key <- self$workspace_loads$keys()[[1L]]
+                load <- self$workspace_loads$get(key)
+                workspace <- load$workspace
+                if (identical(load$phase, "discover")) {
+                    done <- workspace$index$discover_step(max(remaining(), 0))
+                    if (done) {
+                        load$uris <- workspace$index$package_source_uris()
+                        load$phase <- "files"
+                        self$workspace_loads$set(key, load)
+                    }
+                } else {
+                    repeat {
+                        if (load$position >= length(load$uris)) break
+                        load$position <- load$position + 1L
+                        uri <- load$uris[[load$position]]
+                        logger$info("load package file:", path_from_uri(uri))
+                        if (load$index && !workspace$index$summaries$has(uri)) {
+                            workspace$index$update_path(path_from_uri(uri))
+                        }
+                        self$load_index_document(workspace, uri)
+                        if (remaining() <= 0) break
+                    }
+                    if (load$position < length(load$uris)) {
+                        self$workspace_loads$set(key, load)
+                    } else {
+                        if (is_package(workspace$root)) {
+                            workspace$import_from_namespace_file()
+                        }
+                        self$workspace_loads$remove(key)
+                        logger$info("workspace loaded:", workspace$root,
+                            "files:", length(load$uris))
+                    }
+                }
+                if (!self$workspace_loads$size() || remaining() <= 0) break
+            }
+            invisible(TRUE)
         },
         text_sync = function(uri, document, run_lintr = FALSE, parse = FALSE,
             delay = 0, parse_delay = delay,

@@ -1,6 +1,18 @@
 #' Convert a workspace-index glob to a regular expression
 #' @noRd
+# glob patterns are compiled once per pattern; discovery matches every entry
+# of a workspace against every include and exclude pattern
+index_glob_regex_cache <- new.env(hash = TRUE, parent = emptyenv())
+
 index_glob_regex <- function(pattern) {
+    cached <- index_glob_regex_cache[[pattern]]
+    if (!is.null(cached)) return(cached)
+    regex <- index_glob_regex_compile(pattern)
+    assign(pattern, regex, envir = index_glob_regex_cache)
+    regex
+}
+
+index_glob_regex_compile <- function(pattern) {
     pattern <- gsub("\\", "/", pattern, fixed = TRUE)
     output <- character()
     i <- 1L
@@ -63,6 +75,24 @@ index_canonical_uri <- function(uri) {
     path_to_uri(index_normalize_path(path))
 }
 
+#' Relative path of `path` below `root`, or NULL when it is not below it
+#'
+#' Both arguments must already be normalized (see `index_normalize_path`).
+#' This is a plain string comparison, which is orders of magnitude cheaper
+#' than `fs::path_has_parent()` and is what makes discovery of a large
+#' workspace affordable. Callers fall back to the `fs` based checks when it
+#' returns NULL, so a differently spelled but equivalent path still works.
+#' @noRd
+index_relative_path <- function(path, root) {
+    if (!length(root) || !nzchar(root)) return(NULL)
+    if (identical(path, root)) return(".")
+    prefix <- paste0(sub("/+$", "", root), "/")
+    if (startsWith(path, prefix)) {
+        return(substring(path, nchar(prefix) + 1L))
+    }
+    NULL
+}
+
 #' Return the nearest package root containing an R source file
 #' @noRd
 index_package_root <- function(path, workspace_root = NULL) {
@@ -77,7 +107,8 @@ index_package_root <- function(path, workspace_root = NULL) {
     repeat {
         source_dir <- file.path(current, "R")
         if (file.exists(file.path(current, "DESCRIPTION")) &&
-                path_has_parent(path, source_dir)) {
+                (!is.null(index_relative_path(path, source_dir)) ||
+                    path_has_parent(path, source_dir))) {
             return(current)
         }
         if (!is.null(workspace_root) && identical(current, workspace_root)) break
@@ -289,6 +320,7 @@ WorkspaceIndex <- R6::R6Class("WorkspaceIndex",
         enabled = TRUE,
         cache_dirty = FALSE,
         processing_batch = FALSE,
+        discovering = FALSE,
 
         initialize = function(root) {
             self$root <- if (length(root) && nzchar(root)) {
@@ -334,13 +366,19 @@ WorkspaceIndex <- R6::R6Class("WorkspaceIndex",
         contains_path = function(path) {
             if (!self$enabled || !length(path) || !nzchar(path)) return(FALSE)
             path <- index_normalize_path(path)
-            identical(path, self$root) || path_has_parent(path, self$root)
+            !is.null(index_relative_path(path, self$root)) ||
+                path_has_parent(path, self$root)
         },
 
         should_index = function(path, directory = FALSE) {
-            if (!self$contains_path(path)) return(FALSE)
-            rel <- gsub("\\", "/", fs::path_rel(path, start = self$root),
-                fixed = TRUE)
+            if (!self$enabled || !length(path) || !nzchar(path)) return(FALSE)
+            path <- index_normalize_path(path)
+            rel <- index_relative_path(path, self$root)
+            if (is.null(rel)) {
+                if (!path_has_parent(path, self$root)) return(FALSE)
+                rel <- gsub("\\", "/", fs::path_rel(path, start = self$root),
+                    fixed = TRUE)
+            }
             if (index_glob_match(rel, self$exclude_patterns(), directory)) {
                 return(FALSE)
             }
@@ -414,80 +452,79 @@ WorkspaceIndex <- R6::R6Class("WorkspaceIndex",
             invisible(NULL)
         },
 
-        discover = function() {
-            if (!self$enabled || !dir.exists(self$root)) return(invisible(NULL))
+        #' Discover the files of the workspace
+        #'
+        #' Without a budget the whole tree is walked before returning. With a
+        #' budget (in milliseconds) only that much work is done per call and
+        #' the walk is resumed by `discover_step()`; `discovering` is TRUE
+        #' until the walk has finished. Returns TRUE when discovery is complete.
+        discover = function(budget_ms = NULL) {
+            self$discovering <- FALSE
+            private$discovery <- NULL
+            if (!self$enabled || !dir.exists(self$root)) return(invisible(TRUE))
             self$files$clear()
             self$pending <- character()
             self$truncated <- FALSE
             self$load_cache()
             queue <- collections::queue()
             queue$push(self$root)
-            visited <- new.env(hash = TRUE, parent = emptyenv())
-            count <- 0L
             max_files <- self$max_files()
-            max_bytes <- self$max_file_bytes()
-            pending <- character(max_files)
-            pending_count <- 0L
-            real_root <- normalizePath(
-                self$root, winslash = "/", mustWork = FALSE)
-
-            while (queue$size() && count < max_files) {
-                directory <- queue$pop()
-                canonical <- normalizePath(
-                    directory, winslash = "/", mustWork = FALSE)
-                if (exists(canonical, envir = visited, inherits = FALSE)) next
-                assign(canonical, TRUE, envir = visited)
-                entries <- tryCatch(list.files(
-                    directory, all.files = TRUE, no.. = TRUE,
-                    full.names = TRUE), error = function(e) character())
-                if (!length(entries)) next
-                entries <- sort(entries, method = "radix")
-                info <- file.info(entries)
-                for (i in seq_along(entries)) {
-                    path <- index_normalize_path(entries[[i]])
-                    real_path <- normalizePath(
-                        path, winslash = "/", mustWork = FALSE)
-                    if (!identical(real_path, real_root) &&
-                            !path_has_parent(real_path, real_root)) next
-                    is_dir <- isTRUE(info$isdir[[i]])
-                    if (is_dir) {
-                        if (self$should_index(path, directory = TRUE)) {
-                            queue$push(path)
-                        }
-                        next
-                    }
-                    if (!self$should_index(path) || is.na(info$size[[i]]) ||
-                            info$size[[i]] > max_bytes) next
-                    count <- count + 1L
-                    if (count > max_files) break
-                    uri <- path_to_uri(path)
-                    metadata <- list(
-                        uri = uri,
-                        path = path,
-                        size = as.numeric(info$size[[i]]),
-                        mtime = as.numeric(info$mtime[[i]]),
-                        package_root = index_package_root(path, self$root)
-                    )
-                    self$files$set(uri, metadata)
-                    if (!self$summaries$has(uri)) {
-                        pending_count <- pending_count + 1L
-                        pending[[pending_count]] <- uri
-                    }
-                }
+            private$discovery <- list2env(list(
+                queue = queue,
+                visited = new.env(hash = TRUE, parent = emptyenv()),
+                package_roots = new.env(hash = TRUE, parent = emptyenv()),
+                count = 0L,
+                max_files = max_files,
+                max_bytes = self$max_file_bytes(),
+                pending = character(max_files),
+                pending_count = 0L,
+                real_root = normalizePath(
+                    self$root, winslash = "/", mustWork = FALSE)
+            ), parent = emptyenv())
+            self$discovering <- TRUE
+            if (is.null(budget_ms)) {
+                while (!self$discover_step(Inf)) NULL
+                return(invisible(TRUE))
             }
-            self$pending <- if (pending_count) {
-                pending[seq_len(pending_count)]
+            invisible(self$discover_step(budget_ms))
+        },
+
+        #' Continue a discovery started by `discover(budget_ms)`
+        #'
+        #' Walks directories until `budget_ms` milliseconds have elapsed and
+        #' returns TRUE once the whole tree has been visited.
+        discover_step = function(budget_ms = 25) {
+            state <- private$discovery
+            if (is.null(state)) {
+                self$discovering <- FALSE
+                return(invisible(TRUE))
+            }
+            started <- proc.time()[[3L]]
+            queue <- state$queue
+            while (queue$size() && state$count < state$max_files) {
+                directory <- queue$pop()
+                private$discover_directory(directory, state)
+                if ((proc.time()[[3L]] - started) * 1000 >= budget_ms) break
+            }
+            if (queue$size() && state$count < state$max_files) {
+                return(invisible(FALSE))
+            }
+            self$pending <- if (state$pending_count) {
+                state$pending[seq_len(state$pending_count)]
             } else {
                 character()
             }
             stale <- setdiff(self$summaries$keys(), self$files$keys())
             for (uri in stale) self$remove(uri)
-            self$truncated <- queue$size() > 0L || count >= max_files
+            self$truncated <- queue$size() > 0L ||
+                state$count >= state$max_files
             package <- vapply(self$pending, function(uri) {
                 !is.null(self$files$get(uri)$package_root)
             }, logical(1L))
             self$pending <- c(self$pending[package], self$pending[!package])
-            invisible(NULL)
+            private$discovery <- NULL
+            self$discovering <- FALSE
+            invisible(TRUE)
         },
 
         set_summary = function(summary) {
@@ -692,6 +729,75 @@ WorkspaceIndex <- R6::R6Class("WorkspaceIndex",
                 }))
             }
             result
+        }
+    ),
+    private = list(
+        discovery = NULL,
+
+        # Visit one directory of a running discovery: register its R files
+        # and queue its sub-directories. `state` is an environment, so the
+        # counters it holds are updated in place.
+        discover_directory = function(directory, state) {
+            canonical <- normalizePath(
+                directory, winslash = "/", mustWork = FALSE)
+            if (exists(canonical, envir = state$visited, inherits = FALSE)) {
+                return(invisible(NULL))
+            }
+            assign(canonical, TRUE, envir = state$visited)
+            entries <- tryCatch(list.files(
+                directory, all.files = TRUE, no.. = TRUE,
+                full.names = TRUE), error = function(e) character())
+            if (!length(entries)) return(invisible(NULL))
+            entries <- sort(entries, method = "radix")
+            info <- file.info(entries)
+            # a symlink may point outside the workspace; only those need the
+            # expensive canonicalization
+            links <- nzchar(Sys.readlink(entries))
+            for (i in seq_along(entries)) {
+                path <- index_normalize_path(entries[[i]])
+                if (links[[i]]) {
+                    real_path <- normalizePath(
+                        path, winslash = "/", mustWork = FALSE)
+                    if (!identical(real_path, state$real_root) &&
+                            !path_has_parent(real_path, state$real_root)) next
+                }
+                is_dir <- isTRUE(info$isdir[[i]])
+                if (is_dir) {
+                    if (self$should_index(path, directory = TRUE)) {
+                        state$queue$push(path)
+                    }
+                    next
+                }
+                if (!self$should_index(path) || is.na(info$size[[i]]) ||
+                        info$size[[i]] > state$max_bytes) next
+                state$count <- state$count + 1L
+                if (state$count > state$max_files) break
+                uri <- path_to_uri(path)
+                metadata <- list(
+                    uri = uri,
+                    path = path,
+                    size = as.numeric(info$size[[i]]),
+                    mtime = as.numeric(info$mtime[[i]]),
+                    package_root = private$cached_package_root(path, state)
+                )
+                self$files$set(uri, metadata)
+                if (!self$summaries$has(uri)) {
+                    state$pending_count <- state$pending_count + 1L
+                    state$pending[[state$pending_count]] <- uri
+                }
+            }
+            invisible(NULL)
+        },
+
+        # files of one directory share their package root
+        cached_package_root = function(path, state) {
+            key <- dirname(path)
+            if (exists(key, envir = state$package_roots, inherits = FALSE)) {
+                return(get(key, envir = state$package_roots, inherits = FALSE))
+            }
+            root <- index_package_root(path, self$root)
+            assign(key, root, envir = state$package_roots)
+            root
         }
     )
 )
