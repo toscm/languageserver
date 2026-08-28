@@ -1,3 +1,9 @@
+# languageserver 0.3.18.7061
+
+- Make the empty `.lintr` test work with lintr >= 3.2.
+  lintr now treats `linters: list()` as "not configured" and falls back to its default linters, so the test uses a linter that never reports anything to express "no lints".
+  No change to the server itself.
+
 # languageserver 0.3.18.7060
 
 - Load the files of a nested package only in that package's workspace.
