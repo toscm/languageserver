@@ -1,3 +1,17 @@
+# languageserver 0.3.18.7060
+
+- Load the files of a nested package only in that package's workspace.
+  With `nested_packages_depth > 0` the parent workspace and the nested package workspace both created and parsed a document for every file of the package, so each file was parsed twice (979 parse tasks for 493 files under `~/repos`).
+  The parent now only keeps an index summary of those files, which still serves workspace symbols and source lookups, and leaves the documents to the nested workspace.
+
+- Reuse the worker's parse result for the index summary.
+  Every parsed file was parsed again in the main process to extract its definitions and static `source()` calls for the workspace index, and a third time when it was loaded at startup.
+  The parse worker now records the `source()` calls together with the parse data and the main process builds the summary from that, so a file is parsed exactly once during startup.
+  Under `~/repos` a full index now completes in about a minute instead of more than three.
+
+- Fix "argument `rootPath` is missing" errors in call hierarchy, rename and references.
+  `definition_reply()` defaults `rootPath` to the workspace root when a caller does not pass it.
+
 # languageserver 0.3.18.7059
 
 - Load workspaces incrementally so that requests are answered during startup.
