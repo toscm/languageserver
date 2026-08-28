@@ -238,10 +238,60 @@ index_resolve_source <- function(spec, from_path, workspace_root) {
 
 #' Extract top-level definitions and source edges without building semantic XML
 #' @noRd
-index_shallow_summary <- function(path, content, workspace_root, metadata = NULL) {
+#' Summarize a file for the workspace index
+#'
+#' `parsed` optionally carries the result of an earlier parse of `content`
+#' as a list with `definitions`, `source_specs` (see `index_source_specs()`)
+#' and `parse_error`, typically taken from the parse data produced in a
+#' worker session. When given, the content is not parsed again.
+#' @noRd
+index_shallow_summary <- function(path, content, workspace_root, metadata = NULL,
+    parsed = NULL) {
     path <- index_normalize_path(path)
     workspace_root <- index_normalize_path(workspace_root)
     if (is.null(metadata)) metadata <- file.info(path)
+    if (is.null(parsed)) {
+        parsed <- index_parse_for_summary(content)
+    }
+    definitions <- parsed$definitions
+    if (is.null(definitions)) definitions <- list()
+    source_specs <- parsed$source_specs
+    if (is.null(source_specs)) source_specs <- list()
+    parse_error <- isTRUE(parsed$parse_error)
+
+    sources <- unique(Filter(Negate(is.null), lapply(source_specs, function(spec) {
+        resolved <- index_resolve_source(spec, path, workspace_root)
+        if (is.null(resolved)) NULL else path_to_uri(resolved)
+    })))
+    source_candidates <- unique(unlist(lapply(source_specs, function(spec) {
+        candidates <- index_source_candidates(spec, path, workspace_root)
+        if (length(candidates)) vapply(candidates, path_to_uri, character(1L))
+        else character()
+    }), use.names = FALSE))
+    source_candidate_exists <- vapply(source_candidates, function(uri) {
+        candidate <- path_from_uri(uri)
+        file.exists(candidate) && !dir.exists(candidate)
+    }, logical(1L))
+    size <- if (is.data.frame(metadata) && nrow(metadata)) metadata$size[[1L]] else NA_real_
+    mtime <- if (is.data.frame(metadata) && nrow(metadata)) metadata$mtime[[1L]] else as.POSIXct(NA)
+    list(
+        uri = path_to_uri(path),
+        path = path,
+        size = as.numeric(size),
+        mtime = as.numeric(mtime),
+        content_hash = get_content_hash(content),
+        definitions = definitions,
+        sources = sources,
+        source_candidates = source_candidates,
+        source_candidate_exists = source_candidate_exists,
+        parse_error = parse_error,
+        package_root = index_package_root(path, workspace_root)
+    )
+}
+
+#' Parse `content` and extract what the index summary needs from it
+#' @noRd
+index_parse_for_summary <- function(content) {
     expressions <- tryCatch(
         parse(text = content, keep.source = TRUE),
         error = function(e) NULL
@@ -275,34 +325,10 @@ index_shallow_summary <- function(path, content, workspace_root, metadata = NULL
             )
         }
     }
-
-    sources <- unique(Filter(Negate(is.null), lapply(source_specs, function(spec) {
-        resolved <- index_resolve_source(spec, path, workspace_root)
-        if (is.null(resolved)) NULL else path_to_uri(resolved)
-    })))
-    source_candidates <- unique(unlist(lapply(source_specs, function(spec) {
-        candidates <- index_source_candidates(spec, path, workspace_root)
-        if (length(candidates)) vapply(candidates, path_to_uri, character(1L))
-        else character()
-    }), use.names = FALSE))
-    source_candidate_exists <- vapply(source_candidates, function(uri) {
-        candidate <- path_from_uri(uri)
-        file.exists(candidate) && !dir.exists(candidate)
-    }, logical(1L))
-    size <- if (is.data.frame(metadata) && nrow(metadata)) metadata$size[[1L]] else NA_real_
-    mtime <- if (is.data.frame(metadata) && nrow(metadata)) metadata$mtime[[1L]] else as.POSIXct(NA)
     list(
-        uri = path_to_uri(path),
-        path = path,
-        size = as.numeric(size),
-        mtime = as.numeric(mtime),
-        content_hash = get_content_hash(content),
         definitions = definitions,
-        sources = sources,
-        source_candidates = source_candidates,
-        source_candidate_exists = source_candidate_exists,
-        parse_error = is.null(expressions),
-        package_root = index_package_root(path, workspace_root)
+        source_specs = source_specs,
+        parse_error = is.null(expressions)
     )
 }
 
@@ -549,13 +575,13 @@ WorkspaceIndex <- R6::R6Class("WorkspaceIndex",
         },
 
         update_content = function(uri, content, metadata = NULL,
-            cacheable = TRUE) {
+            cacheable = TRUE, parsed = NULL) {
             if (!self$enabled) return(NULL)
             path <- path_from_uri(uri)
             if (!self$should_index(path)) return(NULL)
             if (is.null(metadata)) metadata <- file.info(path)
             summary <- index_shallow_summary(
-                path, content, self$root, metadata = metadata)
+                path, content, self$root, metadata = metadata, parsed = parsed)
             uri <- index_canonical_uri(uri)
             summary$uri <- uri
             summary$cacheable <- isTRUE(cacheable)

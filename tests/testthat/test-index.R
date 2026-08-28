@@ -400,3 +400,56 @@ test_that("glob regexes are compiled once per pattern", {
     expect_true(grepl(first, "sub/dir/file.R", perl = TRUE, ignore.case = TRUE))
     expect_false(grepl(first, "sub/dir/file.txt", perl = TRUE, ignore.case = TRUE))
 })
+
+test_that("index summary can reuse an earlier parse instead of parsing again", {
+    local_index_settings(index_persistent_cache = FALSE)
+    root <- withr::local_tempdir()
+    main <- file.path(root, "main.R")
+    writeLines("helper <- TRUE", file.path(root, "helper.R"))
+    content <- c("source(\"helper.R\")", "f <- function(x) x", "y <- 1")
+    writeLines(content, main)
+
+    parsed_here <- index_shallow_summary(main, content, root)
+    worker <- parse_document(path_to_uri(main), content)
+    expect_true(is.list(worker$index_source_specs))
+    expect_length(worker$index_source_specs, 1L)
+    reused <- index_shallow_summary(main, content, root, parsed = list(
+        definitions = as.list(worker$definitions),
+        source_specs = worker$index_source_specs,
+        parse_error = isTRUE(worker$parse_error)
+    ))
+    expect_identical(reused$sources, parsed_here$sources)
+    expect_identical(reused$source_candidates, parsed_here$source_candidates)
+    expect_setequal(names(reused$definitions), names(parsed_here$definitions))
+    expect_false(reused$parse_error)
+
+    broken <- parse_document(path_to_uri(main), "f <- function(")
+    expect_true(broken$parse_error)
+    expect_identical(broken$index_source_specs, list())
+    summary <- index_shallow_summary(main, "f <- function(", root, parsed = list(
+        definitions = list(), source_specs = broken$index_source_specs,
+        parse_error = TRUE
+    ))
+    expect_true(summary$parse_error)
+    expect_length(summary$sources, 0L)
+})
+
+test_that("parse results from the worker summarize the file for the index", {
+    local_index_settings(index_persistent_cache = FALSE)
+    root <- withr::local_tempdir()
+    main <- file.path(root, "main.R")
+    helper <- file.path(root, "helper.R")
+    writeLines("helper <- TRUE", helper)
+    content <- c("source(\"helper.R\")", "main_fun <- function() helper")
+    writeLines(content, main)
+
+    workspace <- Workspace$new(root)
+    uri <- path_to_uri(main)
+    workspace$documents$set(uri, Document$new(uri, content = content))
+    parsed <- parse_document(uri, content)
+    workspace$update_parse_data(uri, as.list(parsed))
+
+    summary <- workspace$index$summaries$get(index_canonical_uri(uri))
+    expect_identical(summary$sources, list(index_canonical_uri(path_to_uri(helper))))
+    expect_true("main_fun" %in% names(summary$definitions))
+})

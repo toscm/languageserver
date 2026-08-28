@@ -621,6 +621,10 @@ parse_document <- function(uri, content, is_rmarkdown = FALSE,
         ), envir = env)
 
         env$packages <- basename(find.package(env$packages, quiet = TRUE))
+        # static source() calls for the workspace index, so that the main
+        # process does not have to parse the file again to summarize it
+        env$index_source_specs <- unlist(
+            lapply(as.list(expr), index_source_specs), recursive = FALSE)
         data <- utils::getParseData(expr)
         env$completion_data <- completion_parse_data(data)
         env$semantic_data <- semantic_parse_data(data, content)
@@ -637,6 +641,7 @@ parse_document <- function(uri, content, is_rmarkdown = FALSE,
         # incomplete expression. Providers can now return an empty result
         # instead of leaving requests queued until some later valid version.
         env$parse_error <- TRUE
+        env$index_source_specs <- list()
         env$xml_data <- paste0(
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\" ?>\n",
             "<exprlist>\n</exprlist>\n"

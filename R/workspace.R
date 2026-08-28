@@ -523,8 +523,17 @@ Workspace <- R6::R6Class("Workspace",
                 } else {
                     !identical(previous$cacheable, FALSE)
                 }
+                # the worker already parsed the content; reuse its result
+                # instead of parsing again in the main process
+                parsed <- if (!is.null(parse_data$index_source_specs)) {
+                    list(
+                        definitions = as.list(parse_data$definitions),
+                        source_specs = parse_data$index_source_specs,
+                        parse_error = isTRUE(parse_data$parse_error)
+                    )
+                }
                 summary <- self$index$update_content(
-                    uri, doc$content, cacheable = cacheable)
+                    uri, doc$content, cacheable = cacheable, parsed = parsed)
                 if (!is.null(summary) && !isTRUE(parse_data$parse_error)) {
                     summary$definitions <- as.list(parse_data$definitions)
                     self$index$set_summary(summary)
